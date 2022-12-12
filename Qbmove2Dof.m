@@ -1,0 +1,219 @@
+classdef Qbmove2Dof < Arm2Dof
+    %MCCPVD2D 
+    % x: q1 q2 qd1 qd2 
+    % u: 
+    properties (Access = private)
+      name = 'qbmove2'
+      alpha_servo = 20;
+    end
+    properties
+        %name = 'qbmove'
+        actuator1
+        actuator2
+        
+        dimQ = 2
+        dimU = 4
+        
+        Df = 0.002;
+        L = [0.3; 0.3]; 
+        I = [0.0045; 0.0045]; 
+        M = [1.59; 1.44]; %[0.15; 0.15]; %[1.59; 1.44];
+        Lg = [0.15; 0.15];
+        g = 10;
+        
+        viscous_friction = 0; %0.01;
+        coulomb_friction = 0;
+        
+    end
+    
+    methods
+        function obj = Qbmove2Dof()
+            obj = obj@Arm2Dof();
+            obj.actuator1 = Qbmove();
+            obj.actuator2 = Qbmove();
+        end
+        function torque = tau(obj, x, q1, q2)
+%             torque = obj.actuator1.torque(x(1,:), q1(1,:), q2(1,:));
+            torque = obj.actuator1.torque(x, q1, q2);
+            %{
+            tau2 = obj.actuator2.torque(x(2,:), q1(2,:), q2(2,:));
+            torque = [tau1; tau2];
+            %}
+        end
+
+        function [ xdot, xdot_x, xdot_u ] = motor_dynamics_2nd(model, x    , u)
+            
+            p = model.alpha_servo;
+            
+            %tau_l1 = model.torque_spring(x)/model.actuator.gear;
+            %tau_l2 = model.actuator.torque_load2(x(1,:),x(3,:),x(4,:));
+            
+            A = [ 0, 0, 1, 0;
+                0, 0, 0, 1;
+                -p^2, 0, -2*p, 0;
+                0, -p^2, 0, -2*p];
+            
+            B = [ 0, 0;
+                0, 0;
+                p^2, 0;
+                0, p^2];
+            xdot = A*x + B*u;
+            
+            %xdot = A*x + B*u - [0;0; tau_l1/model.actuator.J1; tau_l2/model.actuator.J2];
+            
+            if nargout > 1
+                xdot_x  = A;  
+                xdot_u  = B; 
+            end
+            
+        end
+
+        
+        function qddot = qddot(obj, q, qdot, u)
+            % u: [q1 q2]motor的角度
+            q1_1 = u(1,:);
+            q2_1 = u(2,:);
+            q1_2 = u(3,:);
+            q2_2 = u(4,:);
+%              x_1 = (q1_1+ q2_1)/2;
+%              x_2 = (q1_2+ q2_2)/2;  
+%             tau1 = obj.tau(x_1, q1_1, q2_1);
+%             tau2 = obj.tau(x_2, q1_2, q2_2);
+%             x_1 = q(1,:);
+%             x_2 = q(2,:);
+%             tau1 = obj.tau(q(1,:), q1_1, q2_1);
+%             tau2 = obj.tau(q(2,:), q1_2, q2_2);
+            tau1 = obj.tau(q(1,:), q1_1, q2_1) - obj.Df*qdot(1,:);
+            tau2 = obj.tau(q(2,:), q1_2, q2_2) - obj.Df*qdot(2,:);
+          
+            % origin:tau = obj.tau(q, qdot, u);
+            tau = [tau1;tau2];
+
+            qddot = Arm2Dof.compute_qddot(q, qdot, tau, obj);
+
+        end
+        
+        % x: q1 q2 qd1 qd2
+        % u: u
+        function xdot = dynamics(model, x, u)
+            qddot = model.qddot( x(1:2,:), x(3:4,:), u);
+            xdot1 = [x(3:4); qddot];
+
+            %以下为新增motor dynamics
+            xdot2 = model.motor_dynamics_2nd(x(5:8,:), u(1:2,:));
+            
+            xdot3 = model.motor_dynamics_2nd(x(9:12,:), u(3:4,:));
+            
+            xdot = [xdot1; xdot2; xdot3];
+        end
+        
+        function x = endpoint(obj, q)
+            x = Arm2Dof.endpoint(q, obj.L); 
+        end
+        
+%         function J = jacobian(obj, q)
+%            J = Arm2Dof.jacobian(q, obj.L);
+%         end
+
+        function [xdot, xdot_x, xdot_u] = dynamics_with_jacobian_fd(model, x, u)
+            % uu: (m1 m2 u3)_1 , (m1 m2 u3)_2
+            %uu = [x(5:6,:); u(3,:); x(9:10,:); u(6,:)];
+            % joint accel
+            %qddot = model.qddot( x, u);
+            % first 4 of xdot
+            %xdot1 = [x(3:4); qddot];
+            % last 8 of xdot
+            %[xdot2, xdot2_x, xdot2_u] = model.motor_dynamics_2nd(x(5:8,:), u(1:2,:));
+            
+            %[xdot3, xdot3_x, xdot3_u] = model.motor_dynamics_2nd(x(9:12,:), u(4:5,:));
+            
+            %xdot = [xdot1; xdot2; xdot3];
+            xdot = model.dynamics(x,u);
+            if nargout > 1
+                fx = @(x)model.dynamics(x, u);
+                dfdx = get_jacobian_fd(fx, x);
+                %dfdx = jacobian(fx, x);
+                if iscolumn(dfdx), dfdx = dfdx'; end
+                % Compute derivative of acceleration w.r.t. u
+                %daccdu = zeros(1,model.dimU);
+                fu = @(u)model.dynamics(x, u);
+                dfdu = get_jacobian_fd(fu, u);
+                %dfdx = jacobian(fu, u);
+                if iscolumn(dfdu), dfdu = dfdu'; end
+                xdot_x = dfdx;
+                      
+                xdot_u = dfdu;
+            end
+        end
+    end
+       
+end
+
+
+function d = throwing_distance(L,x)
+            
+            x1 = x(1);
+            x2 = x(2);
+            xdot1 = x(3);
+            xdot2 = x(4);
+            l1 = L(1);
+            l2 = L(2);
+            l2_r = 0.45;
+            g = 10;
+            y0 = 1;
+            x_m = l1*cos(x1) +l2*cos(x1+x2);
+            xdot_m = -l1*sin(x1)*xdot1 - l2_r*sin(x1+x2)*(xdot1+xdot2);
+            y_m = l1*sin(x1) + l2*sin(x1+x2);
+            ydot_m = -l1*cos(x1)*xdot1 - l2_r*cos(x1+x2)*(xdot1+xdot2);
+            T_m = (1/g)*((ydot_m) + sqrt(ydot_m^2 + 2*g*(y_m - y0)));
+            
+            d = x_m + xdot_m*T_m;
+
+end
+
+
+function J = get_jacobian_fd( f, x )
+        
+            delta=1e-6;
+            y = f(x);
+            J = zeros(length(y),length(x));
+            for i=1:length(x)
+	            dx = zeros(size(x)); dx(i) = delta;
+                try 
+                    yp = f(x+dx);
+                catch
+                    yp = NaN;
+                end
+                try
+                    ym = f(x-dx);
+                catch
+                    ym = NaN;
+                end
+                if isnan(yp)
+                    J(:,i) = -ym/delta;
+                elseif isnan(ym)
+                    J(:,i) = yp/delta;
+                else
+                    J(:,i) = ((yp - ym)/(2*delta));
+                end
+                
+            end
+end
+
+function [ l_xx ] = get_hessian_fd( J, x )
+%GET_HESSIAN_FD Summary of this function goes here
+%   Detailed explanation goes here
+    dimX = size(x,1);
+    l_xx = zeros(dimX,dimX);
+    delta = 1e-6;
+    for i=1:dimX
+	dx=zeros(dimX,1); dx(i)=delta;
+
+	lxxp = J( x+dx);
+	lxxm = J( x-dx);
+
+	l_xx(:,i) = (lxxp-lxxm)/(2*delta);
+	
+    end
+
+end
